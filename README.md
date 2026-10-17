@@ -15,3 +15,18 @@ rojo serve
 ```
 
 For more help, check out [the Rojo documentation](https://rojo.space/docs).
+
+## Sword Combat Demo
+First-person demo with a mouse-driven greatsword and a training dummy.
+
+**Controls:** move the mouse to look. **Hold Left Click** to grab the sword: the camera locks and the mouse moves an invisible cursor that the blade tip follows (with momentum; faster drags hit harder). Keep dragging toward any screen edge to turn the camera that way (left/right/up/down) while swinging. Release to return to guard.
+
+| File | What it does |
+| --- | --- |
+| `src/client/FirstPersonCamera.luau` | Custom first-person camera; lets the sword "steal" mouse input while swinging |
+| `src/client/SwordController.luau` | Swing physics, edge orientation, hit detection (all tuning constants at the top) |
+| `src/client/SwordModel.luau` | Local greatsword + arm viewmodel built from parts |
+| `src/client/Hud.luau` | Crosshair + controls hint |
+| `src/shared/SwordConfig.luau` | Damage/speed values shared by client and server |
+| `src/server/TrainingDummy.luau` | Dummy with health bar, damage numbers, wobble, auto-reset |
+| `src/server/init.server.luau` | Spawns the dummy and validates hits from clients |
