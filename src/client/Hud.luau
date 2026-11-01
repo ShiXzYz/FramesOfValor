@@ -30,7 +30,7 @@ function Hud.start(swordController, lockOn)
 	hint.TextSize = 16
 	hint.TextColor3 = Color3.new(1, 1, 1)
 	hint.TextStrokeTransparency = 0.5
-	hint.Text = "Hold Left Click + flick the mouse to slash that way  •  Alternate directions to chain  •  Add Right Click to turn while slashing  •  Caps Lock to lock on"
+	hint.Text = "Hold Left Click + flick the mouse to slash that way  •  Alternate directions to chain  •  Caps Lock to lock on"
 	hint.Parent = gui
 
 	gui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")

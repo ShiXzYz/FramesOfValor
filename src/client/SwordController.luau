@@ -5,7 +5,6 @@
 -- and sweeps through the centre of the screen that way. Faster flicks give
 -- faster slashes. Keep holding and flick again to chain, but each slash is
 -- followed by a short cooldown and can't go the same way as the one before it.
--- Hold right click as well and the same mouse movement also turns the camera.
 -- Release to drift back to guard: the camera stays locked until any slash has
 -- finished, then eases back in so the end of a flick doesn't throw the view around.
 
@@ -76,8 +75,6 @@ local BREATH_RATE = 1.6 -- guard-pose bob speed
 local BREATH_AMOUNT = math.rad(1.5)
 
 local SAMPLE_COUNT = 7 -- points along the blade that sweep for hits
-local WHOOSH_SPEED = 45
-local WHOOSH_COOLDOWN = 0.35
 
 local SwordController = {}
 
@@ -102,7 +99,6 @@ local lastSlashEnd = 0
 local prevSamples: { Vector3 }? = nil
 local prevLocalSamples: { Vector3 }? = nil
 local lastHitTimes: { [Instance]: number } = {}
-local lastWhoosh = 0
 local dummiesFolder: Instance
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Include
@@ -115,7 +111,6 @@ local function newSound(id: string, volume: number): Sound
 	return sound
 end
 
-local whooshSound = newSound("rbxasset://sounds/swordslash.wav", 0.6)
 local hitSound = newSound("rbxasset://sounds/swordlunge.wav", 0.9)
 
 local function aimToDirection(a: Vector2): Vector3
@@ -148,10 +143,6 @@ local function consumeMouse(delta: Vector2): Vector2
 	-- slash or its cooldown can't queue one up.
 	if readied and not slash and os.clock() >= cooldownUntil then
 		gesture += Vector2.new(delta.X, -delta.Y) / (camera.ViewportSize.Y / 2) * MOUSE_SENSITIVITY
-	end
-	-- Holding right click as well shares the movement: the same flick slashes and turns the camera.
-	if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
-		return delta
 	end
 	if readied or slash then
 		lastCameraLock = os.clock()
@@ -259,14 +250,6 @@ local function detectHits(samples: { Vector3 }, localSamples: { Vector3 }, dt: n
 		return
 	end
 
-	local tipSpeed = (localSamples[SAMPLE_COUNT] - prevLocalSamples[SAMPLE_COUNT]).Magnitude / dt
-	local now = os.clock()
-	if tipSpeed >= WHOOSH_SPEED and now - lastWhoosh > WHOOSH_COOLDOWN then
-		lastWhoosh = now
-		whooshSound.PlaybackSpeed = 0.9 + math.random() * 0.2
-		whooshSound:Play()
-	end
-
 	-- Only the strike itself can hit: not the wind-up, and not a sword just being carried.
 	if not slash or slash.t < slash.windup then
 		return
@@ -274,6 +257,7 @@ local function detectHits(samples: { Vector3 }, localSamples: { Vector3 }, dt: n
 
 	-- Sweep each blade sample from where it was last frame to where it is now,
 	-- so fast swings can't skip through the target between frames.
+	local now = os.clock()
 	for i = 1, SAMPLE_COUNT do
 		local from, to = prevSamples[i], samples[i]
 		local speed = (localSamples[i] - prevLocalSamples[i]).Magnitude / dt

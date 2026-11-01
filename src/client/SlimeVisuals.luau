@@ -25,20 +25,30 @@ local SUBDIVISIONS = 2 -- 162 vertices
 local SIMULATE_RANGE = 220 -- further than this the body stops updating
 
 -- Vertex springs
-local STIFFNESS = 170 -- pull back to the resting shape; lower = looser jiggle
-local DAMPING = 5.5 -- lower = wobbles for longer
+local STIFFNESS = 190 -- pull back to the resting shape; lower = looser jiggle
+local DAMPING = 8 -- lower = wobbles for longer
 local NEIGHBOR_PULL = 150 -- how strongly a wobble spreads to nearby vertices
-local INERTIA = 0.55 -- how much of a velocity change the surface resists
+local INERTIA = 0.3 -- how much of a velocity change the surface resists
 local MAX_SHOVE = 55 -- studs/second of velocity change counted in one frame
 local GROUND_SPREAD = 0.3 -- how far flattened vertices bulge outward
-local HIT_DENT = 9 -- inward speed per point of sword damage, scaled by closeness...
-local HIT_DENT_MAX = 180 -- ...up to this
+local HIT_DENT = 5 -- inward speed per point of sword damage, scaled by closeness...
+local HIT_DENT_MAX = 90 -- ...up to this
+local LAND_JIGGLE = 13 -- soft mesh: downward speed of the top of the body on landing...
+local LAUNCH_JIGGLE = 8 -- ...and upward speed on takeoff
+local LAND_SQUASH = 4.5 -- simple body: the same two kicks, in fractions of its height per second
+local LAUNCH_STRETCH = 3.5
+local FALLBACK_SHOVE = 0.05 -- simple body: how much velocity changes deform it
+local NUCLEUS_KICK = 14 -- how hard the nucleus drops inside the body on takeoff and landing
 
 -- Resting shape
-local DOME_HEIGHT = 0.82 -- top of the blob compared to a sphere
-local CROUCH_HEIGHT = 0.55 -- top of the blob when winding up
-local CROUCH_WIDTH = 1.22
-local POSE_RATE = 12
+local DOME_HEIGHT = 0.55 -- top of the blob compared to a sphere
+local DOME_WIDTH = 1.3 -- width of the blob compared to a sphere
+local WIDEST_HEIGHT = 0.4 -- how far above the flat bottom the blob is widest, in radii
+local BASE_DEPTH = 0.92 -- how far the flat bottom sits below the centre; matches the server's collider
+local BASE_EDGE = 0.55 -- how low on the sphere the flat bottom begins; lower = wider base
+local CROUCH_HEIGHT = 0.25 -- top of the blob when winding up
+local CROUCH_WIDTH = 1.55
+local POSE_RATE = 18
 local BREATH_RATE = 2.2
 local BREATH_AMOUNT = 0.025
 local MAX_DT = 1 / 30
@@ -240,15 +250,21 @@ local function stepMesh(body, dt: number, shove: Vector3, breath: number, ground
 	local center = body.core.Position
 	local offsets, velocities, weights = body.offsets, body.velocities, body.weights
 	local height = DOME_HEIGHT + (CROUCH_HEIGHT - DOME_HEIGHT) * body.pose
-	local width = 1 + (CROUCH_WIDTH - 1) * body.pose
+	local width = DOME_WIDTH + (CROUCH_WIDTH - DOME_WIDTH) * body.pose
 	local planePoint = ground and ground.Position
 	local planeNormal = ground and ground.Normal
 
 	for i, unit in sphereVerts do
 		-- Only the top of the dome shrinks, so the base stays planted on the ground.
+		-- The sphere's middle moves down to WIDEST_HEIGHT, so the blob is a low oval, and
+		-- everything below BASE_EDGE sits on one level, which makes the bottom flat.
+		local floor = -radius * BASE_DEPTH
+		local widest = floor + radius * WIDEST_HEIGHT
 		local rest = Vector3.new(
 			unit.X * radius * width * (1 + breath),
-			unit.Y * radius * (if unit.Y > 0 then height * (1 - breath) else 1),
+			if unit.Y > 0
+				then widest + unit.Y * (radius * height * (1 - breath) - widest)
+				else widest + (floor - widest) * math.min(-unit.Y / BASE_EDGE, 1),
 			unit.Z * radius * width * (1 + breath)
 		)
 		local offset = offsets[i]
@@ -292,20 +308,21 @@ end
 
 local function stepFallback(body, dt: number, shove: Vector3, breath: number, ground: RaycastResult?)
 	local force = -body.squash * STIFFNESS - body.squashVel * DAMPING
-	body.squashVel += force * dt - shove * 0.03
+	body.squashVel += force * dt - shove * FALLBACK_SHOVE
 	body.squash += body.squashVel * dt
 	local s = body.squash
-	local stretch = Vector3.new(math.abs(s.X), math.abs(s.Y), math.abs(s.Z))
+	-- Y keeps its sign (negative = flattened); sideways motion stretches either way.
+	local stretch = Vector3.new(math.abs(s.X), s.Y, math.abs(s.Z))
 	local total = stretch.X + stretch.Y + stretch.Z
 	-- Stretching along an axis narrows the other two, keeping the volume roughly constant.
-	local scale = Vector3.one * (1 - total * 0.4) + stretch * 1.2
+	local scale = Vector3.one * (1 - total * 0.5) + stretch * 1.5
 	scale = Vector3.new(
-		math.clamp(scale.X, 0.55, 1.6),
-		math.clamp(scale.Y, 0.45, 1.6),
-		math.clamp(scale.Z, 0.55, 1.6)
+		math.clamp(scale.X, 0.55, 1.7),
+		math.clamp(scale.Y, 0.45, 1.7),
+		math.clamp(scale.Z, 0.55, 1.7)
 	)
 	local height = DOME_HEIGHT + (CROUCH_HEIGHT - DOME_HEIGHT) * body.pose
-	local width = 1 + (CROUCH_WIDTH - 1) * body.pose
+	local width = DOME_WIDTH + (CROUCH_WIDTH - DOME_WIDTH) * body.pose
 	local size = body.radius * 2 * scale * Vector3.new(width + breath, height - breath, width + breath)
 	local position = body.core.Position
 	if ground and position.Y - ground.Position.Y < body.radius * 1.15 then
@@ -361,7 +378,25 @@ local function onHit(core: BasePart, hitPosition: Vector3, damage: number)
 	end
 end
 
-local function onAction(body, action: string)
+-- Kicks the whole body along Y, the top moving most. `softSpeed` is for the soft
+-- mesh and `simpleSpeed` for the simple body; negative flattens, positive stretches.
+local function kickVertical(body, softSpeed: number, simpleSpeed: number)
+	body.nucleusVel -= Vector3.yAxis * NUCLEUS_KICK
+	if body.mesh then
+		for i, unit in sphereVerts do
+			body.velocities[i] += Vector3.yAxis * softSpeed * body.weights[i] * (0.5 + 0.5 * unit.Y)
+		end
+	else
+		body.squashVel += Vector3.yAxis * simpleSpeed
+	end
+end
+
+local function onAction(body, action: string, previous: string?)
+	if previous == "WindUp" and (action == "Hop" or action == "Tackle") then
+		kickVertical(body, LAUNCH_JIGGLE, LAUNCH_STRETCH)
+	elseif (previous == "Hop" or previous == "Tackle") and action == "Idle" then
+		kickVertical(body, -LAND_JIGGLE, -LAND_SQUASH)
+	end
 	if action ~= "Spit" then
 		return
 	end
@@ -385,14 +420,19 @@ local function update(dt: number)
 			local velocity = core.AssemblyLinearVelocity
 			local shove = velocity - body.lastVelocity
 			body.lastVelocity = velocity
+			-- Takeoff and landing get their own kicks in onAction; an upward velocity
+			-- change would flatten the body on takeoff, just when it should stretch.
+			if shove.Y > 0 then
+				shove = Vector3.new(shove.X, 0, shove.Z)
+			end
 			if shove.Magnitude > MAX_SHOVE then
 				shove = shove.Unit * MAX_SHOVE
 			end
 
 			local action = core:GetAttribute("Action")
 			if action ~= body.lastAction then
+				onAction(body, action, body.lastAction)
 				body.lastAction = action
-				onAction(body, action)
 			end
 			local poseGoal = if action == "WindUp" then 1 else 0
 			body.pose += (poseGoal - body.pose) * (1 - math.exp(-POSE_RATE * dt))

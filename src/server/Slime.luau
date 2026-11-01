@@ -23,6 +23,7 @@ local HOP_SPEED = 24
 local HOP_UP = 46
 local WANDER_HOP_SPEED = 13
 local WANDER_HOP_UP = 32
+local HOP_WINDUP = 0.22 -- seconds spent compressing before each hop
 local REST_MIN, REST_MAX = 0.2, 0.5
 local WANDER_REST_MIN, WANDER_REST_MAX = 0.8, 2.5
 
@@ -191,10 +192,10 @@ end
 
 function Slime:_hop(direction: Vector3, speed: number, up: number)
 	self:_face(direction)
-	self.core.AssemblyLinearVelocity = flatUnit(direction) * speed + Vector3.yAxis * up
-	self:_setAction("Hop")
-	self.state = "Air"
-	self.timer = 0.15 -- ignore the ground for a moment while taking off
+	self.hopVelocity = flatUnit(direction) * speed + Vector3.yAxis * up
+	self.state = "WindHop"
+	self.timer = HOP_WINDUP
+	self:_setAction("WindUp")
 end
 
 function Slime:_land(restMin: number, restMax: number)
@@ -333,6 +334,13 @@ function Slime:_step(dt: number, roots)
 	if state == "Rest" then
 		if self.timer <= 0 and self:_isGrounded() then
 			self:_decide(roots)
+		end
+	elseif state == "WindHop" then
+		if self.timer <= 0 then
+			self.core.AssemblyLinearVelocity = self.hopVelocity
+			self:_setAction("Hop")
+			self.state = "Air"
+			self.timer = 0.15 -- ignore the ground for a moment while taking off
 		end
 	elseif state == "Air" then
 		if self.timer <= 0 and self:_isGrounded() then
