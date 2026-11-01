@@ -328,12 +328,14 @@ local function update(dt: number)
 		prevSamples = nil
 		slash = nil
 		baseWalkSpeed = nil -- the next character starts with its own speed
+		SwordController.camera.setLockPaused(false)
 		return
 	end
 	sword.model.Parent = camera
 
 	updateSlash(dt)
 	updateMovement(humanoid)
+	SwordController.camera.setLockPaused(slash ~= nil)
 
 	local prevDir = dir
 	dir = aimToDirection(aim)

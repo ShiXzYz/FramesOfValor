@@ -1,5 +1,6 @@
--- Caps Lock toggles a camera lock on the closest monster. The lock holds that
--- monster until it dies or gets away, then moves to the next closest one in range.
+-- Caps Lock toggles a soft camera lock on the closest monster: the view is nudged
+-- toward it, but aiming and landing the hit are still up to the player. The lock holds
+-- that monster until it dies or gets away, then moves to the next closest one in range.
 
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
