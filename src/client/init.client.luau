@@ -1,7 +1,11 @@
 local FirstPersonCamera = require(script.FirstPersonCamera)
 local Hud = require(script.Hud)
+local LockOn = require(script.LockOn)
+local SlimeVisuals = require(script.SlimeVisuals)
 local SwordController = require(script.SwordController)
 
 FirstPersonCamera.start()
-Hud.start(SwordController)
+LockOn.start(FirstPersonCamera)
+Hud.start(SwordController, LockOn)
 SwordController.start(FirstPersonCamera)
+SlimeVisuals.start()

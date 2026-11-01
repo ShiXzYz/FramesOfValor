@@ -15,6 +15,8 @@ local MAX_PITCH = math.rad(80)
 local EYE_OFFSET = Vector3.new(0, 0.25, 0)
 local SHAKE_DECAY = 4 -- shake units lost per second
 local SHAKE_STRENGTH = 0.05 -- radians at full shake
+local LOCK_TURN_RATE = 12 -- how quickly the view swings onto a locked target
+local LOCK_MIN_DISTANCE = 2 -- studs; closer than this the aim would spin, so hold still
 
 local FirstPersonCamera = {}
 
@@ -23,6 +25,7 @@ local pitch = 0
 local shake = 0
 local roll = 0
 local inputSink: ((Vector2) -> Vector2)? = nil
+local lockTarget: BasePart? = nil
 -- Parts/decals of our own character, hidden locally so they don't block the view.
 local hideable: { BasePart | Decal } = {}
 
@@ -46,6 +49,10 @@ local function onCharacterAdded(character: Model)
 end
 
 local function update(dt: number)
+	-- Keep the cursor locked even while respawning, so it can't wander off the window.
+	UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+	UserInputService.MouseIconEnabled = false
+
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local root = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
@@ -55,8 +62,6 @@ local function update(dt: number)
 	end
 
 	camera.CameraType = Enum.CameraType.Scriptable
-	UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-	UserInputService.MouseIconEnabled = false
 	humanoid.AutoRotate = false
 
 	-- Give the sword first pick of the mouse movement; whatever it doesn't use turns the camera.
@@ -64,8 +69,21 @@ local function update(dt: number)
 	if inputSink then
 		delta = inputSink(delta)
 	end
-	yaw -= delta.X * LOOK_SENSITIVITY
-	pitch = math.clamp(pitch - delta.Y * LOOK_SENSITIVITY, -MAX_PITCH, MAX_PITCH)
+	if lockTarget then
+		-- The lock replaces mouse look, but the sword above still reads the mouse for slashes.
+		local toTarget = lockTarget.Position - (head.Position + EYE_OFFSET)
+		local flat = Vector3.new(toTarget.X, 0, toTarget.Z)
+		if flat.Magnitude > LOCK_MIN_DISTANCE then
+			local turn = 1 - math.exp(-LOCK_TURN_RATE * dt)
+			local yawError = (math.atan2(-toTarget.X, -toTarget.Z) - yaw + math.pi) % (2 * math.pi) - math.pi
+			yaw += yawError * turn
+			local goalPitch = math.clamp(math.atan2(toTarget.Y, flat.Magnitude), -MAX_PITCH, MAX_PITCH)
+			pitch += (goalPitch - pitch) * turn
+		end
+	else
+		yaw -= delta.X * LOOK_SENSITIVITY
+		pitch = math.clamp(pitch - delta.Y * LOOK_SENSITIVITY, -MAX_PITCH, MAX_PITCH)
+	end
 
 	local facing = CFrame.Angles(0, yaw, 0)
 	if humanoid.Health > 0 then
@@ -90,10 +108,9 @@ function FirstPersonCamera.setInputSink(sink: ((Vector2) -> Vector2)?)
 	inputSink = sink
 end
 
--- Turns the view right by `right` radians and up by `up` radians (negative = left/down).
-function FirstPersonCamera.turn(right: number, up: number)
-	yaw -= right
-	pitch = math.clamp(pitch + up, -MAX_PITCH, MAX_PITCH)
+-- Keeps the view turned toward `part` until cleared with nil.
+function FirstPersonCamera.setLockTarget(part: BasePart?)
+	lockTarget = part
 end
 
 -- Tilts the view sideways (radians), e.g. to lean into a swing.

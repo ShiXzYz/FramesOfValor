@@ -1,11 +1,11 @@
--- Minimal HUD: a crosshair that dims while swinging, and a controls hint.
+-- Minimal HUD: a crosshair that dims while swinging and turns red while locked on, and a controls hint.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local Hud = {}
 
-function Hud.start(swordController)
+function Hud.start(swordController, lockOn)
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "KnightHud"
 	gui.ResetOnSpawn = false
@@ -24,19 +24,20 @@ function Hud.start(swordController)
 	local hint = Instance.new("TextLabel")
 	hint.AnchorPoint = Vector2.new(0.5, 1)
 	hint.Position = UDim2.new(0.5, 0, 1, -24)
-	hint.Size = UDim2.fromOffset(800, 24)
+	hint.Size = UDim2.fromOffset(1000, 24)
 	hint.BackgroundTransparency = 1
 	hint.Font = Enum.Font.GothamMedium
 	hint.TextSize = 16
 	hint.TextColor3 = Color3.new(1, 1, 1)
 	hint.TextStrokeTransparency = 0.5
-	hint.Text = "Hold Left Click + drag to swing  •  Keep dragging toward an edge to turn  •  Release to guard"
+	hint.Text = "Hold Left Click + flick the mouse to slash that way  •  Alternate directions to chain  •  Add Right Click to turn while slashing  •  Caps Lock to lock on"
 	hint.Parent = gui
 
 	gui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
 
 	RunService.RenderStepped:Connect(function()
 		crosshair.BackgroundTransparency = if swordController.isSwinging() then 0.7 else 0.2
+		crosshair.BackgroundColor3 = if lockOn.isLocked() then Color3.fromRGB(255, 70, 70) else Color3.new(1, 1, 1)
 	end)
 end
 

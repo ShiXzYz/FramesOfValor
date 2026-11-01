@@ -1,12 +1,13 @@
--- Cursor-guided sword swinging with momentum.
+-- Directional sword slashes with momentum.
 --
--- Hold left click to "grab" the sword: the camera locks and the mouse moves an
--- invisible on-screen cursor. The blade tip is pulled toward the cursor by a
--- spring, so slow drags are precise while fast drags build momentum and
--- overshoot a little, like a heavy blade would. The cursor can't leave the
--- screen, so swinging never jerks the camera; holding it near any screen edge
--- slowly pans the view that way for wide, spinning, overhead or low slashes.
--- Release to drift back to guard.
+-- Hold left click to ready the sword (the camera locks), then flick the mouse.
+-- The flick's direction picks the slash: the blade winds up on the opposite side
+-- and sweeps through the centre of the screen that way. Faster flicks give
+-- faster slashes. Keep holding and flick again to chain, but each slash is
+-- followed by a short cooldown and can't go the same way as the one before it.
+-- Hold right click as well and the same mouse movement also turns the camera.
+-- Release to drift back to guard: the camera stays locked until any slash has
+-- finished, then eases back in so the end of a flick doesn't throw the view around.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -26,23 +27,34 @@ local GUARD_AIM = Vector2.new(math.rad(25), math.rad(50))
 local AIM_MIN = Vector2.new(math.rad(-85), math.rad(-70))
 local AIM_MAX = Vector2.new(math.rad(85), math.rad(85))
 
--- Swing feel
-local CURSOR_SENSITIVITY = 1 -- 1 = sword cursor moves exactly like a normal mouse cursor
-local CURSOR_LIMIT = 0.92 -- how close to the screen edge the cursor may go (1 = edge)
-local SWING_STIFFNESS = 240 -- how hard the blade is pulled toward the cursor
-local SWING_DAMPING = 0.65 -- below 1 = fast drags overshoot (momentum); 1 = no overshoot
-local RETURN_STIFFNESS = 50 -- pull back to guard after releasing
+-- Blade spring
+local RETURN_STIFFNESS = 50 -- pull back to guard / ready pose
 local RETURN_DAMPING = 1
+local STRIKE_STIFFNESS = 420 -- how hard the blade follows the slash path
+local STRIKE_DAMPING = 0.75 -- below 1 = a little overshoot at the end (momentum)
 local MAX_ANGULAR_SPEED = 16 -- radians/second cap; lower = heavier sword
 local VERTICAL_SPEED_MULTIPLIER = 1.6 -- up/down swings respond this much faster and can go this much faster
 local MAX_SUBSTEP = 1 / 120 -- keeps the spring stable at low frame rates
 local EDGE_TURN_RATE = 14 -- how quickly the edge rotates to face the swing direction
 local IMPACT_SLOWDOWN = 0.3 -- fraction of blade speed kept after biting into something
 
--- Holding the cursor near a screen edge slowly turns the camera that way.
-local EDGE_PAN_ENABLED = true
-local EDGE_PAN_START = 0.85 -- fraction of the cursor limit where panning begins
-local EDGE_PAN_SPEED = math.rad(150) -- radians/second at the very edge
+-- Slashes
+local MOUSE_SENSITIVITY = 1
+local GESTURE_THRESHOLD = 0.07 -- flick distance (half screen heights) that triggers a slash
+local GESTURE_DECAY = 8 -- per second; slow drifting fades out instead of triggering
+local SWING_CENTER = Vector2.new(math.rad(5), math.rad(8)) -- slashes pass through here
+local SWING_HALF_ARC = Vector2.new(math.rad(75), math.rad(62)) -- half-length of a slash, side / up-down
+local WINDUP_TIME = 0.09 -- seconds to pull back before the strike (less if already close)
+local STRIKE_TIME_FAST = 0.16 -- strike duration for a fast flick...
+local STRIKE_TIME_SLOW = 0.3 -- ...and for a slow one
+local FLICK_SPEED_FAST = 6 -- flick speed (half screen heights/second) counted as "fast"
+local FOLLOW_THROUGH_TIME = 0.12 -- hold at the end of the slash
+local SLASH_COOLDOWN = 0.25 -- seconds after a slash ends before another can start
+local SAME_DIRECTION_ANGLE = math.rad(45) -- flicks within this angle of the last slash are ignored
+local DIRECTION_MEMORY = 1.0 -- seconds without slashing before the same direction is allowed again
+local LOOK_SETTLE_TIME = 0.2 -- seconds for mouse look to fade back in after the camera lock ends
+local LUNGE_SPEED = 16 -- studs/second of the step taken at the start of a strike, along the held WASD direction
+local LUNGE_TIME = 0.22 -- seconds for that step to fade to a stop
 
 -- Camera-space anchor points (studs). +X right, +Y up, -Z forward.
 local SHOULDER = Vector3.new(0.45, -1.5, -0.1) -- the hand orbits this point
@@ -58,17 +70,18 @@ local ARM_EXTEND = 0.35 -- ...and at full swing speed (reaching out)
 local REACH_RATE = 10
 local TRAIL_SPEED = 7 -- radians/second of blade speed before the swoosh trail shows
 local LEAN_PER_SPEED = 0.006 -- camera roll (radians) per radian/second of sideways swing
-local MAX_LEAN = math.rad(4)
+local MAX_LEAN = math.rad(2)
 local LEAN_RATE = 8
 local BREATH_RATE = 1.6 -- guard-pose bob speed
 local BREATH_AMOUNT = math.rad(1.5)
-local TIP_DISTANCE = HAND_DISTANCE + SwordModel.BladeEnd -- shoulder to blade tip
 
 local SAMPLE_COUNT = 7 -- points along the blade that sweep for hits
 local WHOOSH_SPEED = 45
 local WHOOSH_COOLDOWN = 0.35
 
 local SwordController = {}
+
+type Slash = { direction: Vector2, from: Vector2, to: Vector2, windup: number, strike: number, t: number }
 
 local sword = SwordModel.new()
 local aim = GUARD_AIM
@@ -77,10 +90,17 @@ local dir = Vector3.zAxis
 local edge = Vector3.xAxis
 local reach = 0 -- 0 = arms pulled in, 1 = fully extended
 local lean = 0
-local swinging = false
--- Sword cursor, measured from screen center in units of half the screen height, +Y up.
-local cursor = Vector2.zero
+local readied = false -- left click held
+local gesture = Vector2.zero -- recent mouse movement while readied, screen space (+Y up)
+local gestureTime = 0
+local slash: Slash? = nil
+local cooldownUntil = 0
+local lastCameraLock = 0 -- when the sword last held the camera still
+local baseWalkSpeed: number? = nil -- the humanoid's normal speed, saved while a slash overrides it
+local lastDirection: Vector2? = nil
+local lastSlashEnd = 0
 local prevSamples: { Vector3 }? = nil
+local prevLocalSamples: { Vector3 }? = nil
 local lastHitTimes: { [Instance]: number } = {}
 local lastWhoosh = 0
 local dummiesFolder: Instance
@@ -103,55 +123,10 @@ local function aimToDirection(a: Vector2): Vector3
 	return Vector3.new(math.sin(a.X) * cosUp, math.sin(a.Y), -math.cos(a.X) * cosUp)
 end
 
-local function directionToAim(d: Vector3): Vector2
-	return Vector2.new(math.atan2(d.X, -d.Z), math.asin(math.clamp(d.Y, -1, 1)))
-end
-
 -- `v` with its component along `d` removed, normalized; nil if that leaves nothing.
 local function perpendicular(v: Vector3, d: Vector3): Vector3?
 	local p = v - d * v:Dot(d)
 	return if p.Magnitude > 1e-4 then p.Unit else nil
-end
-
-local function tanHalfFov(): number
-	return math.tan(math.rad(camera.FieldOfView) / 2)
-end
-
-local function cursorRadii(): Vector2
-	local viewport = camera.ViewportSize
-	return Vector2.new(viewport.X / viewport.Y, 1) * CURSOR_LIMIT
-end
-
--- How far out the cursor is, where 1 = on the boundary ellipse.
-local function cursorReach(c: Vector2): number
-	return (c / cursorRadii()).Magnitude
-end
-
-local function clampCursor(c: Vector2): Vector2
-	local reach = cursorReach(c)
-	return if reach > 1 then c / reach else c
-end
-
--- Blade direction (camera space) that puts the tip exactly under the cursor.
-local function cursorToDirection(c: Vector2): Vector3
-	local tanHalf = tanHalfFov()
-	local ray = Vector3.new(c.X * tanHalf, c.Y * tanHalf, -1).Unit
-	-- Solve |ray * t - SHOULDER| = TIP_DISTANCE for the far intersection.
-	local b = ray:Dot(SHOULDER)
-	local t = b + math.sqrt(b * b - SHOULDER:Dot(SHOULDER) + TIP_DISTANCE * TIP_DISTANCE)
-	return (ray * t - SHOULDER).Unit
-end
-
--- Where on screen (cursor units) the blade tip currently is, kept inside the
--- edge-pan zone so grabbing the sword from guard doesn't start turning the camera.
-local function tipToCursor(d: Vector3): Vector2
-	local tip = SHOULDER + d * TIP_DISTANCE
-	local c = if tip.Z > -0.5
-		then Vector2.new(tip.X, tip.Y) * 100
-		else Vector2.new(tip.X, tip.Y) / (-tip.Z * tanHalfFov())
-	local maxReach = EDGE_PAN_START * 0.9
-	local reach = cursorReach(c)
-	return if reach > maxReach then c * (maxReach / reach) else c
 end
 
 local function findDummy(instance: Instance): Instance?
@@ -162,14 +137,78 @@ local function findDummy(instance: Instance): Instance?
 	return if current.Parent == dummiesFolder then current else nil
 end
 
+local function resetGesture()
+	gesture = Vector2.zero
+	gestureTime = 0
+end
+
 -- Called by the camera with this frame's mouse delta; returns whatever the sword didn't use.
 local function consumeMouse(delta: Vector2): Vector2
-	if not swinging then
+	-- Only build up a flick while a new slash is allowed, so input during a
+	-- slash or its cooldown can't queue one up.
+	if readied and not slash and os.clock() >= cooldownUntil then
+		gesture += Vector2.new(delta.X, -delta.Y) / (camera.ViewportSize.Y / 2) * MOUSE_SENSITIVITY
+	end
+	-- Holding right click as well shares the movement: the same flick slashes and turns the camera.
+	if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
 		return delta
 	end
-	local halfHeight = camera.ViewportSize.Y / 2
-	cursor = clampCursor(cursor + Vector2.new(delta.X, -delta.Y) / halfHeight * CURSOR_SENSITIVITY)
-	return Vector2.zero
+	if readied or slash then
+		lastCameraLock = os.clock()
+		return Vector2.zero
+	end
+	-- Just unlocked: the hand is probably still finishing the flick, so fade mouse look back in.
+	local settle = math.clamp((os.clock() - lastCameraLock) / LOOK_SETTLE_TIME, 0, 1)
+	return delta * settle * settle
+end
+
+local function isRepeatDirection(direction: Vector2): boolean
+	if not lastDirection or os.clock() - lastSlashEnd > DIRECTION_MEMORY then
+		return false
+	end
+	return direction:Dot(lastDirection) > math.cos(SAME_DIRECTION_ANGLE)
+end
+
+-- Starts a slash along `direction` (screen space, +Y up): wind up on the
+-- opposite side of SWING_CENTER, then sweep through it to the far side.
+local function startSlash(direction: Vector2, flickSpeed: number)
+	-- Scale the unit direction onto the arc ellipse so diagonals aren't longer.
+	local radius = 1 / (direction / SWING_HALF_ARC).Magnitude
+	local half = direction * radius
+	local from = (SWING_CENTER - half):Max(AIM_MIN):Min(AIM_MAX)
+	local to = (SWING_CENTER + half):Max(AIM_MIN):Min(AIM_MAX)
+
+	-- Skip most of the wind-up when the blade is already near the start (e.g. chaining).
+	local windupDistance = (from - aim).Magnitude / (2 * radius)
+	local fast = math.clamp(flickSpeed / FLICK_SPEED_FAST, 0, 1)
+	slash = {
+		direction = direction,
+		from = from,
+		to = to,
+		windup = WINDUP_TIME * math.clamp(windupDistance, 0.25, 1),
+		strike = STRIKE_TIME_SLOW + (STRIKE_TIME_FAST - STRIKE_TIME_SLOW) * fast,
+		t = 0,
+	}
+end
+
+-- Advances the slash in progress and returns where the blade should aim this frame.
+local function stepSlash(current: Slash, dt: number): Vector2?
+	current.t += dt
+	local t = current.t
+	if t < current.windup then
+		return current.from
+	end
+	t -= current.windup
+	if t < current.strike then
+		-- Ease in-out so the blade accelerates through the middle of the arc.
+		local alpha = t / current.strike
+		alpha = alpha * alpha * (3 - 2 * alpha)
+		return current.from:Lerp(current.to, alpha)
+	end
+	if t < current.strike + FOLLOW_THROUGH_TIME then
+		return current.to
+	end
+	return nil
 end
 
 local function stepSpring(target: Vector2, stiffness: number, dampingRatio: number, dt: number)
@@ -213,12 +252,14 @@ local function onHit(dummy: Instance, position: Vector3, speed: number)
 	aimVelocity *= IMPACT_SLOWDOWN
 end
 
-local function detectHits(samples: { Vector3 }, dt: number, rootVelocity: Vector3)
-	if not prevSamples then
+-- `samples` are world positions along the blade; `localSamples` are the same points
+-- in camera space, so speeds count only the swing, not turning or running.
+local function detectHits(samples: { Vector3 }, localSamples: { Vector3 }, dt: number)
+	if not prevSamples or not prevLocalSamples then
 		return
 	end
 
-	local tipSpeed = ((samples[SAMPLE_COUNT] - prevSamples[SAMPLE_COUNT]) / dt - rootVelocity).Magnitude
+	local tipSpeed = (localSamples[SAMPLE_COUNT] - prevLocalSamples[SAMPLE_COUNT]).Magnitude / dt
 	local now = os.clock()
 	if tipSpeed >= WHOOSH_SPEED and now - lastWhoosh > WHOOSH_COOLDOWN then
 		lastWhoosh = now
@@ -226,11 +267,16 @@ local function detectHits(samples: { Vector3 }, dt: number, rootVelocity: Vector
 		whooshSound:Play()
 	end
 
+	-- Only the strike itself can hit: not the wind-up, and not a sword just being carried.
+	if not slash or slash.t < slash.windup then
+		return
+	end
+
 	-- Sweep each blade sample from where it was last frame to where it is now,
 	-- so fast swings can't skip through the target between frames.
 	for i = 1, SAMPLE_COUNT do
 		local from, to = prevSamples[i], samples[i]
-		local speed = ((to - from) / dt - rootVelocity).Magnitude
+		local speed = (localSamples[i] - prevLocalSamples[i]).Magnitude / dt
 		if speed >= SwordConfig.MinHitSpeed then
 			local result = workspace:Raycast(from, to - from, rayParams)
 			local dummy = result and findDummy(result.Instance)
@@ -242,6 +288,53 @@ local function detectHits(samples: { Vector3 }, dt: number, rootVelocity: Vector
 	end
 end
 
+local function updateSlash(dt: number)
+	if readied and not slash and os.clock() >= cooldownUntil then
+		gesture *= math.exp(-GESTURE_DECAY * dt)
+		gestureTime += dt
+		if gesture.Magnitude >= GESTURE_THRESHOLD then
+			local direction = gesture.Unit
+			if not isRepeatDirection(direction) then
+				startSlash(direction, gesture.Magnitude / math.max(gestureTime, 1 / 60))
+			end
+			resetGesture()
+		end
+	end
+
+	-- A slash that has started always finishes, even if the button is released.
+	local target = slash and stepSlash(slash, dt)
+	if slash and not target then
+		lastDirection = slash.direction
+		lastSlashEnd = os.clock()
+		cooldownUntil = lastSlashEnd + SLASH_COOLDOWN
+		slash = nil
+		resetGesture()
+	end
+
+	if target then
+		stepSpring(target, STRIKE_STIFFNESS, STRIKE_DAMPING, dt)
+	elseif readied then
+		-- Readied but not slashing: hold the blade up in front, ready to go any way.
+		stepSpring(SWING_CENTER, RETURN_STIFFNESS, RETURN_DAMPING, dt)
+	else
+		local breathing = Vector2.new(0, math.sin(os.clock() * BREATH_RATE) * BREATH_AMOUNT)
+		stepSpring(GUARD_AIM + breathing, RETURN_STIFFNESS, RETURN_DAMPING, dt)
+	end
+end
+
+-- A slash plants the feet, apart from a short step into the strike. Walk speed is
+-- all that changes, so the step follows the held WASD keys and none means no step.
+local function updateMovement(humanoid: Humanoid)
+	if slash then
+		baseWalkSpeed = baseWalkSpeed or humanoid.WalkSpeed
+		local t = slash.t - slash.windup
+		humanoid.WalkSpeed = if t >= 0 and t < LUNGE_TIME then LUNGE_SPEED * (1 - t / LUNGE_TIME) else 0
+	elseif baseWalkSpeed then
+		humanoid.WalkSpeed = baseWalkSpeed
+		baseWalkSpeed = nil
+	end
+end
+
 local function update(dt: number)
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -249,25 +342,14 @@ local function update(dt: number)
 	if not (humanoid and root and humanoid.Health > 0) then
 		sword.model.Parent = nil
 		prevSamples = nil
+		slash = nil
+		baseWalkSpeed = nil -- the next character starts with its own speed
 		return
 	end
 	sword.model.Parent = camera
 
-	if swinging then
-		if EDGE_PAN_ENABLED then
-			local reach = cursorReach(cursor)
-			if reach > EDGE_PAN_START then
-				local push = (reach - EDGE_PAN_START) / (1 - EDGE_PAN_START)
-				local pan = (cursor / cursorRadii()) * push * EDGE_PAN_SPEED * dt
-				SwordController.camera.turn(pan.X, pan.Y)
-			end
-		end
-		local target = directionToAim(cursorToDirection(cursor)):Max(AIM_MIN):Min(AIM_MAX)
-		stepSpring(target, SWING_STIFFNESS, SWING_DAMPING, dt)
-	else
-		local breathing = Vector2.new(0, math.sin(os.clock() * BREATH_RATE) * BREATH_AMOUNT)
-		stepSpring(GUARD_AIM + breathing, RETURN_STIFFNESS, RETURN_DAMPING, dt)
-	end
+	updateSlash(dt)
+	updateMovement(humanoid)
 
 	local prevDir = dir
 	dir = aimToDirection(aim)
@@ -304,17 +386,21 @@ local function update(dt: number)
 	SwordController.camera.setRoll(lean)
 
 	local samples = table.create(SAMPLE_COUNT)
+	local localSamples = table.create(SAMPLE_COUNT)
 	for i = 1, SAMPLE_COUNT do
 		local distance = SwordModel.BladeStart
 			+ (SwordModel.BladeEnd - SwordModel.BladeStart) * (i - 1) / (SAMPLE_COUNT - 1)
-		samples[i] = handCFrame * Vector3.new(0, 0, -distance)
+		local point = Vector3.new(0, 0, -distance)
+		samples[i] = handCFrame * point
+		localSamples[i] = localHand * point
 	end
-	detectHits(samples, dt, root.AssemblyLinearVelocity)
+	detectHits(samples, localSamples, dt)
 	prevSamples = samples
+	prevLocalSamples = localSamples
 end
 
 function SwordController.isSwinging(): boolean
-	return swinging
+	return readied or slash ~= nil
 end
 
 function SwordController.start(firstPersonCamera)
@@ -326,14 +412,13 @@ function SwordController.start(firstPersonCamera)
 
 	UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if not gameProcessed and input.UserInputType == Enum.UserInputType.MouseButton1 then
-			-- Start the cursor where the tip already is (or as close as the screen allows).
-			cursor = tipToCursor(dir)
-			swinging = true
+			resetGesture()
+			readied = true
 		end
 	end)
 	UserInputService.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			swinging = false
+			readied = false
 		end
 	end)
 
