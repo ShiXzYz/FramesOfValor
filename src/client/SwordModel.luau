@@ -1,4 +1,4 @@
--- Builds the local-only greatsword + armored forearm viewmodel out of plain parts.
+-- Builds the local-only silver sword + armored forearm viewmodel out of plain parts.
 -- Everything is positioned relative to a "hand" CFrame whose:
 --   LookVector  = direction the blade points
 --   RightVector = direction the cutting edge faces
@@ -9,18 +9,16 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SwordConfig = require(ReplicatedStorage.Shared.SwordConfig)
 
 local BLADE_START = 0.63 -- distance from the hand to where the blade leaves the guard
-local TIP_LENGTH = 0.75 -- length of the tapered point
-local STRAIGHT_LENGTH = SwordConfig.BladeLength + 0.28 - TIP_LENGTH -- blade before the point
-local BLADE_WIDTH = 0.55 -- at the guard
-local TIP_WIDTH = 0.36 -- where the point begins
-local BLADE_THICKNESS = 0.08
+local TIP_LENGTH = 0.45 -- length of the angled point
+local STRAIGHT_LENGTH = SwordConfig.BladeLength - TIP_LENGTH -- blade before the point
+local BLADE_WIDTH = 0.42 -- edges run parallel all the way to the point
+local BLADE_THICKNESS = 0.07
 
-local STEEL = Color3.fromRGB(190, 195, 205)
-local BRIGHT_STEEL = Color3.fromRGB(225, 230, 238) -- the sharpened edges
+local SILVER = Color3.fromRGB(200, 203, 210)
+local SHADED_SILVER = Color3.fromRGB(150, 153, 160) -- one bevel catches less light than the other
 local DARK_STEEL = Color3.fromRGB(70, 72, 80)
-local BRASS = Color3.fromRGB(150, 120, 70)
+local GRIP_LEATHER = Color3.fromRGB(165, 95, 40)
 local ARMOR = Color3.fromRGB(95, 98, 108)
-local LEATHER = Color3.fromRGB(70, 45, 30)
 local DARK_LEATHER = Color3.fromRGB(42, 30, 24)
 local CLOTH = Color3.fromRGB(58, 52, 50)
 
@@ -43,7 +41,7 @@ SwordModel.__index = SwordModel
 
 -- Distances along the hand's LookVector covered by the blade (used for hit detection).
 SwordModel.BladeStart = BLADE_START
-SwordModel.BladeEnd = BLADE_START + STRAIGHT_LENGTH + TIP_LENGTH
+SwordModel.BladeEnd = BLADE_START + SwordConfig.BladeLength
 
 local function newPart(parent: Instance, name: string, shape: Enum.PartType, size: Vector3, color: Color3, material: Enum.Material): Part
 	local part = Instance.new("Part")
@@ -87,45 +85,43 @@ function SwordModel.new()
 		return part
 	end
 
-	local block, ball, cylinder, wedge =
-		Enum.PartType.Block, Enum.PartType.Ball, Enum.PartType.Cylinder, Enum.PartType.Wedge
+	local block, cylinder, wedge = Enum.PartType.Block, Enum.PartType.Cylinder, Enum.PartType.Wedge
 	local metal = Enum.Material.Metal
 	local alongBlade = CFrame.Angles(0, math.pi / 2, 0) -- turns a cylinder's axis onto the blade
 
-	-- Long two-handed grip: right hand just under the guard, left hand near the pommel.
-	piece("Grip", cylinder, Vector3.new(1.3, 0.22, 0.22), LEATHER, Enum.Material.Leather,
+	-- Grip long enough for both hands, wrapped in leather with a dark cord spiralling round it.
+	piece("Grip", cylinder, Vector3.new(1.3, 0.22, 0.22), GRIP_LEATHER, Enum.Material.Leather,
 		CFrame.new(0, 0, 0.1) * alongBlade)
 	for i = 0, 8 do
 		piece("GripWrap", cylinder, Vector3.new(0.025, 0.235, 0.235), DARK_LEATHER, Enum.Material.Leather,
-			CFrame.new(0, 0, -0.48 + i * 0.145) * alongBlade)
+			CFrame.new(0, 0, -0.48 + i * 0.145) * alongBlade * CFrame.Angles(0, 0, math.rad(22)))
 	end
 
-	piece("PommelNeck", cylinder, Vector3.new(0.07, 0.27, 0.27), BRASS, metal, CFrame.new(0, 0, 0.74) * alongBlade)
-	piece("Pommel", ball, Vector3.one * 0.38, DARK_STEEL, metal, CFrame.new(0, 0, 0.9))
-	piece("PommelCap", ball, Vector3.one * 0.12, BRASS, metal, CFrame.new(0, 0, 1.06))
+	-- Square block pommel.
+	piece("Pommel", block, Vector3.new(0.34, 0.34, 0.26), SILVER, metal, CFrame.new(0, 0, 0.88))
+	piece("PommelCap", block, Vector3.new(0.28, 0.28, 0.05), SHADED_SILVER, metal, CFrame.new(0, 0, 1.03))
 
-	piece("Guard", cylinder, Vector3.new(1.4, 0.14, 0.14), DARK_STEEL, metal, CFrame.new(0, 0, -0.52))
-	piece("GuardBlock", block, Vector3.new(0.34, 0.17, 0.2), DARK_STEEL, metal, CFrame.new(0, 0, -0.54))
-	piece("GuardCollar", block, Vector3.new(0.6, 0.12, 0.06), BRASS, metal, CFrame.new(0, 0, -0.62))
+	-- Chunky rectangular crossguard with a groove near each end, and a collar onto the grip.
+	piece("Guard", block, Vector3.new(0.95, 0.22, 0.3), SILVER, metal, CFrame.new(0, 0, -0.52))
 	for _, side in { -1, 1 } do
-		piece("GuardFinial", ball, Vector3.one * 0.21, BRASS, metal, CFrame.new(side * 0.72, 0, -0.52))
+		piece("GuardGroove", block, Vector3.new(0.035, 0.23, 0.31), DARK_STEEL, metal, CFrame.new(side * 0.34, 0, -0.52))
 	end
+	piece("GuardCollar", block, Vector3.new(0.2, 0.2, 0.12), SHADED_SILVER, metal, CFrame.new(0, 0, -0.39))
 
-	local blade = piece("Blade", block, Vector3.new(TIP_WIDTH, BLADE_THICKNESS, STRAIGHT_LENGTH), STEEL, metal,
-		CFrame.new(0, 0, -(BLADE_START + STRAIGHT_LENGTH / 2)))
-	-- A groove down each flat; slightly thicker than the blade so it shows on both sides.
-	piece("Fuller", block, Vector3.new(0.09, BLADE_THICKNESS + 0.01, STRAIGHT_LENGTH * 0.75), DARK_STEEL, metal,
-		CFrame.new(0, 0, -(BLADE_START + STRAIGHT_LENGTH * 0.375)))
+	-- Straight blade with parallel edges: each half is its own bevel, one catching more
+	-- light than the other, with a dark groove down the middle.
+	local blade = piece("Blade", block, Vector3.new(BLADE_WIDTH / 2, BLADE_THICKNESS, STRAIGHT_LENGTH), SILVER, metal,
+		CFrame.new(BLADE_WIDTH / 4, 0, -(BLADE_START + STRAIGHT_LENGTH / 2)))
+	piece("BladeShade", block, Vector3.new(BLADE_WIDTH / 2, BLADE_THICKNESS, STRAIGHT_LENGTH), SHADED_SILVER, metal,
+		CFrame.new(-BLADE_WIDTH / 4, 0, -(BLADE_START + STRAIGHT_LENGTH / 2)))
+	piece("Fuller", block, Vector3.new(0.04, BLADE_THICKNESS + 0.01, STRAIGHT_LENGTH * 0.9), DARK_STEEL, metal,
+		CFrame.new(0, 0, -(BLADE_START + STRAIGHT_LENGTH * 0.45)))
 
-	-- A wedge's thin end faces forward, so each one narrows toward the tip. `inner` is
-	-- how far its straight side sits from the blade's centre line, `base` where it starts.
-	local function taper(name, side: number, inner: number, width: number, base: number, length: number, color)
-		piece(name, wedge, Vector3.new(BLADE_THICKNESS, width, length), color, metal,
-			CFrame.new(side * (inner + width / 2), 0, -(base + length / 2)) * CFrame.Angles(0, 0, -side * math.pi / 2))
-	end
+	-- Angled point: a wedge on each side, each narrowing from the blade's edge to the tip.
 	for _, side in { -1, 1 } do
-		taper("BladeEdge", side, TIP_WIDTH / 2, (BLADE_WIDTH - TIP_WIDTH) / 2, BLADE_START, STRAIGHT_LENGTH, BRIGHT_STEEL)
-		taper("Tip", side, 0, TIP_WIDTH / 2, BLADE_START + STRAIGHT_LENGTH, TIP_LENGTH, STEEL)
+		piece("Tip", wedge, Vector3.new(BLADE_THICKNESS, BLADE_WIDTH / 2, TIP_LENGTH), if side > 0 then SILVER else SHADED_SILVER, metal,
+			CFrame.new(side * BLADE_WIDTH / 4, 0, -(BLADE_START + STRAIGHT_LENGTH + TIP_LENGTH / 2))
+				* CFrame.Angles(0, 0, -side * math.pi / 2))
 	end
 
 	-- A gauntlet closed around the grip. `side` is which flat of the blade the back of the hand is on.
@@ -159,10 +155,11 @@ function SwordModel.new()
 
 	-- Swoosh streak along the outer part of the blade, only shown on fast swings.
 	local trailStart = Instance.new("Attachment")
-	trailStart.Position = Vector3.new(0, 0, STRAIGHT_LENGTH / 2 - STRAIGHT_LENGTH * 0.35)
+	-- "Blade" is the right half, so shift left onto the centre line.
+	trailStart.Position = Vector3.new(-BLADE_WIDTH / 4, 0, STRAIGHT_LENGTH / 2 - STRAIGHT_LENGTH * 0.35)
 	trailStart.Parent = blade
 	local trailEnd = Instance.new("Attachment")
-	trailEnd.Position = Vector3.new(0, 0, -STRAIGHT_LENGTH / 2 - TIP_LENGTH)
+	trailEnd.Position = Vector3.new(-BLADE_WIDTH / 4, 0, -STRAIGHT_LENGTH / 2 - TIP_LENGTH)
 	trailEnd.Parent = blade
 	local trail = Instance.new("Trail")
 	trail.Attachment0 = trailStart

@@ -11,6 +11,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 
+local Guard = require(script.Parent.Guard)
+
 local RADIUS = 3 -- visual radius; the collider is a little smaller so the body overhangs it
 local MAX_HEALTH = 120
 local RESPAWN_DELAY = 25
@@ -137,6 +139,7 @@ function Slime.new(position: Vector3)
 	model.Parent = parentFolder
 	core:SetNetworkOwner(nil)
 	CollectionService:AddTag(core, "SlimeCore")
+	CollectionService:AddTag(core, "Monster")
 
 	local self = setmetatable({
 		model = model,
@@ -230,7 +233,9 @@ local function explodeGoo(goo, position: Vector3, normal: Vector3)
 	goo.part:Destroy()
 	splat(position, normal)
 	for _, entry in alivePlayerRoots() do
-		if (entry.root.Position - position).Magnitude <= GOO_SPLASH_RADIUS + 2.5 then
+		if (entry.root.Position - position).Magnitude <= GOO_SPLASH_RADIUS + 2.5
+			and not Guard.tryBlock(entry.player, position, GOO_DAMAGE, "SlimeGoo")
+		then
 			entry.humanoid:TakeDamage(GOO_DAMAGE)
 		end
 	end
@@ -373,11 +378,21 @@ function Slime:_step(dt: number, roots)
 			for _, entry in roots do
 				if (entry.root.Position - self.core.Position).Magnitude <= RADIUS + 2.5 then
 					self.tackleHit = true
-					entry.humanoid:TakeDamage(TACKLE_DAMAGE)
-					local push = flatUnit(entry.root.Position - self.core.Position) * TACKLE_KNOCKBACK
-					knockbackRemote:FireClient(entry.player, push + Vector3.yAxis * 35)
-					-- Splats against the player and loses its momentum.
-					self.core.AssemblyLinearVelocity *= 0.25
+					local away = flatUnit(entry.root.Position - self.core.Position)
+					local guarded = Guard.tryBlock(entry.player, self.core.Position, TACKLE_DAMAGE, "SlimeTackle")
+					if guarded == "parry" then
+						-- Bounced off the blade.
+						self.core.AssemblyLinearVelocity = -away * 35 + Vector3.yAxis * 25
+					else
+						if guarded == "block" then
+							knockbackRemote:FireClient(entry.player, away * TACKLE_KNOCKBACK * 0.4 + Vector3.yAxis * 12)
+						else
+							entry.humanoid:TakeDamage(TACKLE_DAMAGE)
+							knockbackRemote:FireClient(entry.player, away * TACKLE_KNOCKBACK + Vector3.yAxis * 35)
+						end
+						-- Splats against the player and loses its momentum.
+						self.core.AssemblyLinearVelocity *= 0.25
+					end
 					break
 				end
 			end

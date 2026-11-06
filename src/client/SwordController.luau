@@ -7,6 +7,11 @@
 -- followed by a short cooldown and can't go the same way as the one before it.
 -- Release to drift back to guard: the camera stays locked until any slash has
 -- finished, then eases back in so the end of a flick doesn't throw the view around.
+--
+-- Hold right click to raise the sword in front as a guard; the camera locks and moving
+-- the mouse left or right tilts the blade. A guard only stops an attack if the blade
+-- crosses its path at the right angle (see shared/ParryRules; server/Guard decides),
+-- and it drops by itself after a moment.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -14,12 +19,14 @@ local RunService = game:GetService("RunService")
 local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
 
+local ParryRules = require(ReplicatedStorage.Shared.ParryRules)
 local SwordConfig = require(ReplicatedStorage.Shared.SwordConfig)
 local SwordModel = require(script.Parent.SwordModel)
 
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 local swordHitRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("SwordHit") :: RemoteEvent
+local guardRemote = ReplicatedStorage.Remotes:WaitForChild("Guard") :: RemoteEvent
 
 -- Aim is (right, up) angles in radians of the blade direction, relative to the camera.
 local GUARD_AIM = Vector2.new(math.rad(25), math.rad(50))
@@ -55,6 +62,14 @@ local LOOK_SETTLE_TIME = 0.2 -- seconds for mouse look to fade back in after the
 local LUNGE_SPEED = 16 -- studs/second of the step taken at the start of a strike, along the held WASD direction
 local LUNGE_TIME = 0.22 -- seconds for that step to fade to a stop
 
+-- Guarding
+local GUARD_RAISE_STIFFNESS = 260
+local GUARD_MAX_TIME = 1.5 -- matches server/Guard; the guard drops by itself after this
+local TILT_SENSITIVITY = math.rad(0.35) -- radians of blade tilt per pixel of sideways mouse movement
+local GUARD_FORWARD = 0.35 -- how far forward of the screen plane the guarding blade leans
+local TILT_SEND_STEP = math.rad(2) -- tilt changes smaller than this aren't sent to the server...
+local TILT_SEND_INTERVAL = 0.05 -- ...nor more often than this
+
 -- Camera-space anchor points (studs). +X right, +Y up, -Z forward.
 local SHOULDER = Vector3.new(0.45, -1.5, -0.1) -- the hand orbits this point
 local RIGHT_ARM_ROOT = Vector3.new(1.1, -2.2, 0.6) -- forearms are drawn from these to the hands
@@ -77,6 +92,7 @@ local BREATH_AMOUNT = math.rad(1.5)
 local SAMPLE_COUNT = 7 -- points along the blade that sweep for hits
 
 local SwordController = {}
+SwordController.camera = nil :: any -- the FirstPersonCamera module, set in start()
 
 type Slash = { direction: Vector2, from: Vector2, to: Vector2, windup: number, strike: number, t: number }
 
@@ -88,6 +104,11 @@ local edge = Vector3.xAxis
 local reach = 0 -- 0 = arms pulled in, 1 = fully extended
 local lean = 0
 local readied = false -- left click held
+local guarding = false
+local guardStart = 0
+local guardTilt = 0 -- radians from upright; see ParryRules
+local sentTilt = 0
+local lastTiltSend = 0
 local gesture = Vector2.zero -- recent mouse movement while readied, screen space (+Y up)
 local gestureTime = 0
 local slash: Slash? = nil
@@ -112,6 +133,9 @@ local function newSound(id: string, volume: number): Sound
 end
 
 local hitSound = newSound("rbxasset://sounds/swordlunge.wav", 0.9)
+local parrySound = newSound("rbxasset://sounds/unsheath.wav", 1)
+local blockSound = newSound("rbxasset://sounds/swordlunge.wav", 0.7)
+blockSound.PlaybackSpeed = 0.7
 
 local function aimToDirection(a: Vector2): Vector3
 	local cosUp = math.cos(a.Y)
@@ -139,12 +163,19 @@ end
 
 -- Called by the camera with this frame's mouse delta; returns whatever the sword didn't use.
 local function consumeMouse(delta: Vector2): Vector2
+	if guarding then
+		-- The mouse tilts the guard instead of turning the camera.
+		guardTilt = math.clamp(guardTilt + delta.X * TILT_SENSITIVITY, -ParryRules.MAX_TILT, ParryRules.MAX_TILT)
+		lastCameraLock = os.clock()
+		return Vector2.zero
+	end
 	-- Only build up a flick while a new slash is allowed, so input during a
 	-- slash or its cooldown can't queue one up.
-	if readied and not slash and os.clock() >= cooldownUntil then
+	local aiming = readied and not guarding
+	if aiming and not slash and os.clock() >= cooldownUntil then
 		gesture += Vector2.new(delta.X, -delta.Y) / (camera.ViewportSize.Y / 2) * MOUSE_SENSITIVITY
 	end
-	if readied or slash then
+	if aiming or slash then
 		lastCameraLock = os.clock()
 		return Vector2.zero
 	end
@@ -272,8 +303,53 @@ local function detectHits(samples: { Vector3 }, localSamples: { Vector3 }, dt: n
 	end
 end
 
+local function setGuard(raise: boolean)
+	if raise == guarding then
+		return
+	end
+	guarding = raise
+	guardStart = os.clock()
+	resetGesture()
+	if raise then
+		guardTilt = 0 -- every guard starts upright
+		sentTilt = 0
+		lastTiltSend = os.clock()
+		guardRemote:FireServer("raise", guardTilt)
+	else
+		guardRemote:FireServer("lower")
+	end
+end
+
+-- Keeps the server's copy of the tilt current, without flooding it.
+local function sendTilt()
+	local now = os.clock()
+	if math.abs(guardTilt - sentTilt) >= TILT_SEND_STEP and now - lastTiltSend >= TILT_SEND_INTERVAL then
+		sentTilt = guardTilt
+		lastTiltSend = now
+		guardRemote:FireServer("tilt", guardTilt)
+	end
+end
+
+-- Where to aim the blade so that, on screen, it sits at `tilt` from upright.
+local function tiltToAim(tilt: number): Vector2
+	local axis = ParryRules.bladeAxis(tilt)
+	local direction = Vector3.new(axis.X, axis.Y, -GUARD_FORWARD).Unit
+	return Vector2.new(math.atan2(direction.X, -direction.Z), math.asin(direction.Y))
+end
+
+local function canGuard(): boolean
+	return not slash and not player:GetAttribute("GuardBroken") and (player:GetAttribute("Shield") or 100) > 0
+end
+
 local function updateSlash(dt: number)
-	if readied and not slash and os.clock() >= cooldownUntil then
+	if guarding and (os.clock() - guardStart > GUARD_MAX_TIME or player:GetAttribute("GuardBroken")) then
+		setGuard(false) -- right click has to be let go and pressed again to raise it anew
+	end
+	if guarding then
+		sendTilt()
+	end
+
+	if readied and not guarding and not slash and os.clock() >= cooldownUntil then
 		gesture *= math.exp(-GESTURE_DECAY * dt)
 		gestureTime += dt
 		if gesture.Magnitude >= GESTURE_THRESHOLD then
@@ -297,6 +373,8 @@ local function updateSlash(dt: number)
 
 	if target then
 		stepSpring(target, STRIKE_STIFFNESS, STRIKE_DAMPING, dt)
+	elseif guarding then
+		stepSpring(tiltToAim(guardTilt), GUARD_RAISE_STIFFNESS, RETURN_DAMPING, dt)
 	elseif readied then
 		-- Readied but not slashing: hold the blade up in front, ready to go any way.
 		stepSpring(SWING_CENTER, RETURN_STIFFNESS, RETURN_DAMPING, dt)
@@ -328,6 +406,7 @@ local function update(dt: number)
 		prevSamples = nil
 		slash = nil
 		baseWalkSpeed = nil -- the next character starts with its own speed
+		setGuard(false)
 		SwordController.camera.setLockPaused(false)
 		return
 	end
@@ -386,7 +465,16 @@ local function update(dt: number)
 end
 
 function SwordController.isSwinging(): boolean
-	return readied or slash ~= nil
+	return (readied and not guarding) or slash ~= nil
+end
+
+function SwordController.isGuarding(): boolean
+	return guarding
+end
+
+-- While true the sword is setting the character's walk speed (the step into a strike).
+function SwordController.isSlashing(): boolean
+	return slash ~= nil
 end
 
 function SwordController.start(firstPersonCamera)
@@ -397,14 +485,46 @@ function SwordController.start(firstPersonCamera)
 	firstPersonCamera.setInputSink(consumeMouse)
 
 	UserInputService.InputBegan:Connect(function(input, gameProcessed)
-		if not gameProcessed and input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if gameProcessed then
+			return
+		end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
 			resetGesture()
 			readied = true
+		elseif input.UserInputType == Enum.UserInputType.MouseButton2 and canGuard() then
+			setGuard(true)
 		end
 	end)
 	UserInputService.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
 			readied = false
+		elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+			setGuard(false)
+		end
+	end)
+
+	-- The server reports what the guard stopped; make it felt.
+	player:GetAttributeChangedSignal("ParryTime"):Connect(function()
+		parrySound:Play()
+		SwordController.camera.shake(0.5)
+		aimVelocity += Vector2.new(4, 6) -- the blade rings back off the blow
+	end)
+	player:GetAttributeChangedSignal("BlockTime"):Connect(function()
+		blockSound:Play()
+		SwordController.camera.shake(0.3)
+		aimVelocity += Vector2.new(0, -5)
+	end)
+	player:GetAttributeChangedSignal("GuardMissTime"):Connect(function()
+		-- Wrong angle: the blow slipped past the blade and swatted it aside.
+		hitSound:Play()
+		SwordController.camera.shake(0.7)
+		aimVelocity += Vector2.new(8, -8)
+	end)
+	player:GetAttributeChangedSignal("GuardBroken"):Connect(function()
+		if player:GetAttribute("GuardBroken") then
+			blockSound:Play()
+			SwordController.camera.shake(0.9)
+			aimVelocity += Vector2.new(-6, -10) -- knocked down out of the guard
 		end
 	end)
 

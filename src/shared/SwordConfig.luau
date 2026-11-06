@@ -1,11 +1,12 @@
 -- Tuning values shared by the client (hit detection) and server (validation + damage).
 local SwordConfig = {
-	BladeLength = 5,
+	BladeLength = 4.2, -- from the guard to the point
 
 	-- Speed (studs/second) of the blade at the point of contact.
 	-- Slower than MinHitSpeed doesn't count as a hit; MaxHitSpeed and above deals MaxDamage.
-	MinHitSpeed = 22,
-	MaxHitSpeed = 90,
+	-- A longer blade moves faster at the tip, so scale these with BladeLength.
+	MinHitSpeed = 19,
+	MaxHitSpeed = 77,
 	MinDamage = 4,
 	MaxDamage = 35,
 

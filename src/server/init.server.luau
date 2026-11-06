@@ -5,8 +5,11 @@ local SwordConfig = require(ReplicatedStorage.Shared.SwordConfig)
 local TrainingDummy = require(script.TrainingDummy)
 local BenchSeats = require(script.BenchSeats)
 local Slime = require(script.Slime)
+local Goblin = require(script.Goblin)
+local Guard = require(script.Guard)
 
 BenchSeats.init()
+Guard.start()
 
 local swordHitRemote = ReplicatedStorage.Remotes.SwordHit
 
@@ -16,23 +19,29 @@ dummiesFolder.Parent = workspace
 
 TrainingDummy.new(Vector3.new(0, 0, -10), dummiesFolder)
 
--- Slimes live in the same folder so the sword's hit detection finds them too.
-local TEST_SLIME_POSITION = Vector3.new(-5, 45, 30) -- near the player spawn; remove once done testing
+-- Monsters live in the same folder so the sword's hit detection finds them too.
+local TEST_GOBLIN_POSITION = Vector3.new(10, 45, 30) -- near the player spawn; remove once done testing
 
-Slime.start(dummiesFolder, function(damage, position)
+local function showDamageNumber(damage, position)
 	TrainingDummy._showDamageNumber(nil, damage, position)
-end)
-Slime.new(TEST_SLIME_POSITION)
+end
+Slime.start(dummiesFolder, showDamageNumber)
+Goblin.start(dummiesFolder, showDamageNumber)
+Goblin.new(TEST_GOBLIN_POSITION)
 
--- One slime per forest clearing.
+-- Each forest clearing gets a slime at its first spawn marker and a goblin at its second.
 local monsterSpawns = workspace.Kingdom.KingsRoad.KingsWood:FindFirstChild("MonsterSpawns")
 if monsterSpawns then
-	local usedClearings = {}
+	local spawnsUsed = {}
 	for _, spawnPoint in monsterSpawns:GetChildren() do
 		local clearing = spawnPoint:GetAttribute("Clearing")
-		if not usedClearings[clearing] then
-			usedClearings[clearing] = true
-			Slime.new(spawnPoint.Position + Vector3.new(0, 5, 0))
+		local used = (spawnsUsed[clearing] or 0) + 1
+		spawnsUsed[clearing] = used
+		local position = spawnPoint.Position + Vector3.new(0, 5, 0)
+		if used == 1 then
+			Slime.new(position)
+		elseif used == 2 then
+			Goblin.new(position)
 		end
 	end
 end
@@ -50,7 +59,7 @@ swordHitRemote.OnServerEvent:Connect(function(player, dummyModel, hitPosition, s
 	if speed ~= speed or speed < SwordConfig.MinHitSpeed then -- speed ~= speed rejects NaN
 		return
 	end
-	local dummy = TrainingDummy.fromModel(dummyModel) or Slime.fromModel(dummyModel)
+	local dummy = TrainingDummy.fromModel(dummyModel) or Slime.fromModel(dummyModel) or Goblin.fromModel(dummyModel)
 	if not dummy then
 		return
 	end

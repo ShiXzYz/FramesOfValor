@@ -26,10 +26,10 @@ end
 
 local function findClosest(origin: Vector3): BasePart?
 	local closest, closestDistance = nil, LOCK_RANGE
-	for _, core in CollectionService:GetTagged("SlimeCore") do
-		local distance = (core.Position - origin).Magnitude
-		if distance < closestDistance and core:IsDescendantOf(workspace) then
-			closest, closestDistance = core, distance
+	for _, monster in CollectionService:GetTagged("Monster") do
+		local distance = (monster.Position - origin).Magnitude
+		if distance < closestDistance and monster:IsDescendantOf(workspace) then
+			closest, closestDistance = monster, distance
 		end
 	end
 	return closest
